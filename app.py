@@ -84,6 +84,23 @@ def format_name_field(data):
 def refine_parsed_data(parsed_item):
     item = parsed_item.copy()
     raw_text = item.get('text', '').strip()
+    # 在搜尋 Scholar 之前，針對 Ko, K. et al. 這類文獻進行補強
+if not url and first_author:
+    # 擴大搜尋範圍：使用作者名 + 標題前幾個單詞
+    broad_query = f"{first_author} {title}"
+    url, found_title = search_scholar_by_title(broad_query, serpapi_key)
+    
+    if found_title:
+        # 使用 difflib 計算「網路標題」與「原文獻標題」的相似度
+        similarity = difflib.SequenceMatcher(None, title.lower(), found_title.lower()).ratio()
+        
+        # 如果相似度高，或是網路標題包含了你的簡寫標題
+        if similarity > 0.7 or title.lower() in found_title.lower():
+            res.update({
+                "sources": {"Google Scholar (模糊匹配)": url},
+                "found_at_step": "5. Google Scholar (Fuzzy Match)"
+            })
+            return res
 
     # 1. 基礎符號清洗
     for key in ['doi', 'url', 'title', 'date']:
