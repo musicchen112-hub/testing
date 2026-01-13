@@ -217,6 +217,7 @@ def search_scopus_by_title(title, api_key, author=None):
 
 
 def search_scholar_by_title(title, api_key, author=None, raw_text=None):
+    st.write(f"🔍 正在嘗試指紋搜尋: {title[:30]}...") # 這是暫時的測試碼，會在畫面顯示
     import re
     from serpapi import GoogleSearch
 
@@ -369,3 +370,4 @@ def check_url_availability(url):
         return 200 <= resp.status_code < 400
 
     except: return False
+
