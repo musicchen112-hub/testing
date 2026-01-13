@@ -61,44 +61,43 @@ def _check_author_match(query_author, result_authors_list):
 def _is_match(query, result):
     if not query or not result: return False
     
-    def extreme_clean(text):
-        text = re.sub(r'\[.*?\]', '', str(text)) 
-        text = re.sub(r'\b(19|20)\d{2}\b', '', text)
-        # 移除太短的雜訊字 (2個字母以下的)
+    # 1. 基礎清洗：移除 [PDF]、年份、標點符號，轉小寫
+    def get_clean_words(text):
+        # 移除學術標籤如 [PDF], [HTML]
+        text = re.sub(r'\[.*?\]', '', str(text))
+        # 轉小寫，只留英文單字 (排除掉太短的 2 字以下單字)
         words = re.findall(r'\b[a-z]{3,}\b', text.lower())
-        return "".join(words), words
+        # 排除掉常見但無意義的學術詞彙 (Stop words)
+        stops = {'the', 'and', 'for', 'with', 'from', 'using', 'based', 'journal', 'researchgate', 'proceedings'}
+        return [w for w in words if w not in stops]
 
-    c_q_str, q_words = extreme_clean(query)
-    c_r_str, r_words = extreme_clean(result)
+    q_words = get_clean_words(query)
+    r_words = get_clean_words(result)
 
     if not q_words or not r_words: return False
 
-    # --- 1. 計算相似度比例 ---
+    # 2. 核心比對邏輯 A：關鍵字命中率 (Keyword Hit Rate)
+    # 這是救回 Ko, K. 且擋掉 ID 11 的關鍵
+    # 我們看 query 裡的重要單字，有多少比例出現在搜尋結果裡
+    hits = sum(1 for w in q_words if w in r_words)
+    hit_rate = hits / len(q_words)
+
+    # 3. 核心比對邏輯 B：字串相似度 (Sequence Ratio)
+    c_q_str = "".join(q_words)
+    c_r_str = "".join(r_words)
     ratio = SequenceMatcher(None, c_q_str, c_r_str).ratio()
 
-    # --- 2. 關鍵字命中檢查 (核心保險) ---
-    # 找出 query 中最重要的長單字 (長度 > 5)
-    key_keywords = [w for w in q_words if len(w) > 5 and w not in ['using', 'through', 'based', 'from']]
+    # --- 判定規則 ---
     
-    # 如果有長單字，至少要命中一半以上
-    if key_keywords:
-        hits = sum(1 for w in key_keywords if w in c_r_str)
-        hit_rate = hits / len(key_keywords)
-    else:
-        hit_rate = 1.0 # 沒長單字就不計
-
-    # --- 3. 判定邏輯 (精準平衡) ---
-    # 狀況 A: 相似度極高 (基本就是同一篇)
-    if ratio > 0.85:
-        return True
+    # 規則 1：高相似度 (直接過)
+    if ratio > 0.8: return True
     
-    # 狀況 B: 相似度中等，但核心關鍵字命中率高 (救回 Ko, K.)
-    if ratio > 0.5 and hit_rate >= 0.6:
-        return True
-        
-    # 狀況 C: 包含關係，但必須滿足最低相似度 (防止像 ID 11 那種完全無關的包含)
-    if (c_q_str in c_r_str or c_r_str in c_q_str) and ratio > 0.4:
-        return True
+    # 規則 2：關鍵字命中率高 (Ko, K. 的救星)
+    # 只要 query 裡有 70% 的核心單字都出現在標題中，就算通過
+    if hit_rate >= 0.7: return True
+    
+    # 規則 3：針對較短的標題，相似度若有 0.6 且命中一半以上關鍵字也給過
+    if ratio > 0.6 and hit_rate >= 0.5: return True
 
     return False
 # --- API 呼叫輔助 ---
@@ -170,16 +169,31 @@ def search_scopus_by_title(title, api_key, author=None):
 def search_scholar_by_title(title, api_key, author=None, raw_text=None):
     if not api_key: return None, "No API Key"
     
+    # 內部的搜尋小工具（修正版）
     def _do_search(query_string, match_mode):
         try:
             params = {"engine": "google_scholar", "q": query_string, "api_key": api_key, "num": 5}
             search = GoogleSearch(params)
             results = search.get_dict()
             organic = results.get("organic_results", [])
+            
             for res in organic:
                 res_title = res.get("title", "")
+                res_link = res.get("link", "")
+                # 這裡最關鍵：抓取 Google Scholar 回傳的作者片段
+                # 格式通常是 "Y Wang, J Chen - Neural Computing and..., 2022"
+                res_author_info = res.get("publication_info", {}).get("summary", "")
+                
+                # 1. 檢查標題
                 if _is_match(title, res_title):
-                    return res.get("link"), match_mode
+                    # 2. 檢查作者 (如果我們有提供 first_author)
+                    if valid_search_author:
+                        # 只要作者姓氏沒出現在 Google 的作者摘要中，就判定為誤判
+                        if valid_search_author.lower() in res_author_info.lower():
+                            return res_link, res_title
+                        else:
+                            continue # 雖然標題像，但作者不對，看下一筆
+                    return res_link, res_title
             return None, None
         except: return None, None
 
@@ -256,5 +270,6 @@ def check_url_availability(url):
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
     except: return False
+
 
 
