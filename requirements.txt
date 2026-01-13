@@ -4,5 +4,4 @@ python-docx
 PyMuPDF
 requests==2.31.0
 google-search-results
-anystyle
 bs4
