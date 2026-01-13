@@ -1,0 +1,7 @@
+streamlit
+pandas
+python-docx
+PyMuPDF
+requests==2.31.0
+google-search-results
+bs4
