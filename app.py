@@ -84,23 +84,6 @@ def format_name_field(data):
 def refine_parsed_data(parsed_item):
     item = parsed_item.copy()
     raw_text = item.get('text', '').strip()
-    # 在搜尋 Scholar 之前，針對 Ko, K. et al. 這類文獻進行補強
-if not url and first_author:
-    # 擴大搜尋範圍：使用作者名 + 標題前幾個單詞
-    broad_query = f"{first_author} {title}"
-    url, found_title = search_scholar_by_title(broad_query, serpapi_key)
-    
-    if found_title:
-        # 使用 difflib 計算「網路標題」與「原文獻標題」的相似度
-        similarity = difflib.SequenceMatcher(None, title.lower(), found_title.lower()).ratio()
-        
-        # 如果相似度高，或是網路標題包含了你的簡寫標題
-        if similarity > 0.7 or title.lower() in found_title.lower():
-            res.update({
-                "sources": {"Google Scholar (模糊匹配)": url},
-                "found_at_step": "5. Google Scholar (Fuzzy Match)"
-            })
-            return res
 
     # 1. 基礎符號清洗
     for key in ['doi', 'url', 'title', 'date']:
@@ -109,9 +92,7 @@ if not url and first_author:
 
     title = item.get('title', '')
 
-    # =========================================================
-    # [NEW] Patch 1: 修復 "第二作者殘留" 問題
-    # =========================================================
+    # Patch 1: 修復 "第二作者殘留" 問題
     if title and (title.startswith('&') or title.lower().startswith('and ')):
         fix_match = re.search(r'^&(?:amp;)?\s*[^0-9]+?\(?\d{4}\)?[\.\s]+(.*)', title)
         if fix_match:
@@ -120,9 +101,7 @@ if not url and first_author:
                 title = cleaned_title
                 item['title'] = title
 
-    # =========================================================
-    # [NEW] Patch 2: 強力去噪
-    # =========================================================
+    # Patch 2: 強力去噪
     if title:
         title = re.sub(r'^\s*\d{4}[\.\s]+', '', title)
         title = re.sub(r'(?i)\.?\s*arXiv.*$', '', title)
@@ -141,7 +120,7 @@ if not url and first_author:
                     item['title'] = str(val).strip()
                     break
 
-    # [Pattern C] 年份定位法
+    # 年份定位法
     if (not item.get('title') or item['title'] == 'N/A') and item.get('date'):
         year_str = str(item['date'])[0:4] 
         if year_str.isdigit():
@@ -198,14 +177,11 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
             res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
             return res
 
-    # Google Scholar 模糊匹配補丁 (解決 Ko, K. et al. 縮寫問題)
+    # Google Scholar 模糊匹配補丁 (針對 Ko, K. et al. 案例)
     try:
-        # 先用標準標題搜
         url, found_title = search_scholar_by_title(search_query, serpapi_key, author=first_author, raw_text=text)
-        if url:
-            # 計算相似度
+        if url and found_title:
             similarity = difflib.SequenceMatcher(None, title.lower(), str(found_title).lower()).ratio()
-            # 如果相似度高於 0.6 或 原標題在找到的標題內 (處理 RAG 縮寫)
             if similarity > 0.6 or (title.lower() in str(found_title).lower()):
                 res.update({"sources": {"Google Scholar": url}, "found_at_step": "5. Google Scholar"})
                 return res
