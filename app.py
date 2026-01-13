@@ -123,14 +123,6 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
     
     res = {"id": idx, "title": title, "text": text, "parsed": ref, "sources": {}, "found_at_step": None, "suggestion": None}
 
-    # --- [新增：嚴格比對工具函數] ---
-    def is_title_match(found_title, target_title, threshold=0.75):
-        if not found_title or not target_title: return False
-        # 清洗標點與空白
-        t1 = re.sub(r'[^\w\s]', '', str(found_title).lower())
-        t2 = re.sub(r'[^\w\s]', '', str(target_title).lower())
-        return difflib.SequenceMatcher(None, t1, t2).ratio() >= threshold
-
     # 1. Local DB (維持原樣)
     if bool(re.search(r'[\u4e00-\u9fff]', title)) and local_df is not None and title:
         match_row, _ = search_local_database(local_df, target_col, title, threshold=0.85)
@@ -145,25 +137,37 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
         res.update({"sources": {"Crossref": url_cr}, "found_at_step": "1. Crossref"})
         return res
 
-    # 3. Google Scholar 搜尋 (補強搜尋與嚴格過濾)
+    # 3. Google Scholar 搜尋 (使用 api_clients 內建的階層搜尋與比對)
     if serpapi_key:
         try:
-            # 策略 A：使用精確標題搜尋 (加雙引號)
-            url_gs, gs_title = search_scholar_by_title(f'"{title}"', serpapi_key, author=first_author)
+            # 直接傳入 title 和 raw_text，讓 api_clients 內部去跑「三關搜尋」
+            url_gs, gs_title = search_scholar_by_title(
+                title=title, 
+                api_key=serpapi_key, 
+                author=first_author, 
+                raw_text=text
+            )
             
-            # 策略 B：如果失敗 (針對 ID 3 等新論文)，改用寬鬆關鍵字組合
-            if not url_gs or not is_title_match(gs_title, title):
-                fallback_query = f"{title} {first_author} {year}"
-                url_gs, gs_title = search_scholar_by_title(fallback_query, serpapi_key)
-
-            # 【關鍵過濾】只有標題對得上的才算成功
-            if url_gs and is_title_match(gs_title, title):
-                res.update({"sources": {"Google Scholar": url_gs}, "found_at_step": "5. Google Scholar"})
+            if url_gs:
+                # 只要 API 回傳了 URL，代表它在內部已經通過了新版的 _is_match 檢查
+                res.update({
+                    "sources": {"Google Scholar": url_gs}, 
+                    "found_at_step": "5. Google Scholar"
+                })
+                # 如果有抓到更完整的標題，就更新它
+                if gs_title: res["title"] = gs_title 
                 return res
-            elif url_gs:
-                # 標題不合，丟到建議區，不視為「已驗證」
-                res["suggestion"] = url_gs
-        except: pass
+            
+            # 如果連 search_scholar_by_title 都回傳 None，
+            # 我們才嘗試最後的「全文模糊建議」
+            else:
+                url_fallback, _ = search_scholar_by_ref_text(text, serpapi_key, target_title=title)
+                if url_fallback:
+                    res["suggestion"] = url_fallback
+                    
+        except Exception as e:
+            # 這裡可以暫時加上 st.write(f"Debug: {e}") 來看看有沒有報錯
+            pass
 
     # 4. 檢查原文是否自帶網址 (ID 8, 9 的情況)
     if not res["found_at_step"]:
