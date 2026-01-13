@@ -106,7 +106,7 @@ def _is_match(query, result):
     if ratio > 0.7:
         return True
      # 在 _is_match 函數最後面 return False 之前加入：
-     st.write(f"🔍 比對失敗詳情 | 目標: {q_words} | 搜尋結果: {r_words} | 命中率: {hit_rate:.2f}")   
+st.write(f"🔍 比對失敗詳情 | 目標: {q_words} | 搜尋結果: {r_words} | 命中率: {hit_rate:.2f}")   
     return False
 # --- API 呼叫輔助 ---
 def _call_external_api_with_retry(url: str, params: dict, headers=None):
@@ -278,6 +278,7 @@ def check_url_availability(url):
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
     except: return False
+
 
 
 
