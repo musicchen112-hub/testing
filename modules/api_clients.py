@@ -61,44 +61,51 @@ def _check_author_match(query_author, result_authors_list):
 def _is_match(query, result):
     if not query or not result: return False
     
-    # 1. 基礎清洗：移除 [PDF]、年份、標點符號，轉小寫
     def get_clean_words(text):
-        # 移除學術標籤如 [PDF], [HTML]
-        text = re.sub(r'\[.*?\]', '', str(text))
-        # 轉小寫，只留英文單字 (排除掉太短的 2 字以下單字)
-        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
-        # 排除掉常見但無意義的學術詞彙 (Stop words)
-        stops = {'the', 'and', 'for', 'with', 'from', 'using', 'based', 'journal', 'researchgate', 'proceedings'}
+        # 1. 移除學術標籤與括號內容 (如 [PDF], (2022))
+        text = re.sub(r'\[.*?\]|\(.*?\)', '', str(text))
+        # 2. 移除開頭的數字編號 (如 "15. Wang" -> "Wang")
+        text = re.sub(r'^\d+[\.\s]+', '', text.strip())
+        # 3. 轉小寫，只留英文與數字單字
+        words = re.findall(r'\b[a-z0-9]{3,}\b', text.lower())
+        # 4. 移除極度常見的干擾字
+        stops = {'the', 'and', 'for', 'with', 'from', 'using', 'based', 'journal', 'researchgate'}
         return [w for w in words if w not in stops]
 
     q_words = get_clean_words(query)
     r_words = get_clean_words(result)
 
+    # --- 防呆：如果清洗後變空的，嘗試更簡單的清洗 ---
+    if not q_words:
+        q_words = re.findall(r'\w+', query.lower())
+    if not r_words:
+        r_words = re.findall(r'\w+', result.lower())
+
     if not q_words or not r_words: return False
 
-    # 2. 核心比對邏輯 A：關鍵字命中率 (Keyword Hit Rate)
-    # 這是救回 Ko, K. 且擋掉 ID 11 的關鍵
-    # 我們看 query 裡的重要單字，有多少比例出現在搜尋結果裡
-    hits = sum(1 for w in q_words if w in r_words)
-    hit_rate = hits / len(q_words)
-
-    # 3. 核心比對邏輯 B：字串相似度 (Sequence Ratio)
-    c_q_str = "".join(q_words)
-    c_r_str = "".join(r_words)
+    # --- 核心邏輯：關鍵字交集百分比 ---
+    # 只要 query 裡的重要單字，有一定比例出現在結果中即可
+    q_set = set(q_words)
+    r_set = set(r_words)
+    
+    # 計算 query 的單字有多少比例出現在 result 中
+    intersection = q_set.intersection(r_set)
+    
+    # 判定 A：如果 query 裡有 60% 以上的單字對中了 (救回 Ko, K.)
+    hit_rate = len(intersection) / len(q_set) if q_set else 0
+    
+    # 判定 B：傳統相似度 (防止極短標題誤判)
+    c_q_str = "".join(sorted(list(q_set)))
+    c_r_str = "".join(sorted(list(r_set)))
     ratio = SequenceMatcher(None, c_q_str, c_r_str).ratio()
 
-    # --- 判定規則 ---
-    
-    # 規則 1：高相似度 (直接過)
-    if ratio > 0.8: return True
-    
-    # 規則 2：關鍵字命中率高 (Ko, K. 的救星)
-    # 只要 query 裡有 70% 的核心單字都出現在標題中，就算通過
-    if hit_rate >= 0.7: return True
-    
-    # 規則 3：針對較短的標題，相似度若有 0.6 且命中一半以上關鍵字也給過
-    if ratio > 0.6 and hit_rate >= 0.5: return True
-
+    # --- 最終門檻設定 ---
+    # 這裡的門檻是關鍵：0.55 是處理「髒數據」最平衡的數字
+    if hit_rate >= 0.55:
+        return True
+    if ratio > 0.7:
+        return True
+        
     return False
 # --- API 呼叫輔助 ---
 def _call_external_api_with_retry(url: str, params: dict, headers=None):
@@ -270,6 +277,7 @@ def check_url_availability(url):
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
     except: return False
+
 
 
 
