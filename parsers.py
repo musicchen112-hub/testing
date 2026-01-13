@@ -6,13 +6,18 @@ import json
 import streamlit as st
 import tempfile
 import os
+import platform
 
 # ==============================================================================
 # AnyStyle 解析（語系自動偵測逐行模型切換版）
 # ==============================================================================
 
 # 🔴 請確保此路徑與你電腦中的 ruby.exe 位置一致
-RUBY_EXE = r"ruby"
+# 根據系統自動切換 ruby 呼叫方式
+if platform.system() == "Windows":
+    RUBY_EXE = r"ruby" 
+else:
+    RUBY_EXE = "ruby" # Linux 環境下直接呼叫系統名稱即可
 
 def parse_references_with_anystyle(raw_text_for_anystyle):
     """
@@ -168,3 +173,4 @@ def clean_title_for_remedial(text):
     ]
 
     return re.sub(r"\s+", " ", "".join(cleaned)).strip()
+
