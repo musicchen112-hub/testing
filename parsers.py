@@ -28,11 +28,6 @@ def parse_references_with_anystyle(raw_text_for_anystyle):
     if not raw_text_for_anystyle or not raw_text_for_anystyle.strip():
         return [], []
 
-    # 1️⃣ 確認 ruby.exe 存在
-    if not os.path.exists(RUBY_EXE):
-        st.error(f"❌ 找不到 ruby.exe：{RUBY_EXE}")
-        return [], []
-
     # 2️⃣ 將輸入文字按行拆分，過濾掉空行
     lines = [line.strip() for line in raw_text_for_anystyle.split('\n') if line.strip()]
     
@@ -173,4 +168,5 @@ def clean_title_for_remedial(text):
     ]
 
     return re.sub(r"\s+", " ", "".join(cleaned)).strip()
+
 
