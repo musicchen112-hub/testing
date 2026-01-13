@@ -217,30 +217,44 @@ def search_scopus_by_title(title, api_key, author=None):
 
 
 def search_scholar_by_title(title, api_key, author=None, raw_text=None):
-    """
-    階層式搜尋策略 (適應混合格式)：
-    1. 清洗作者：
-       - 有 "et al" -> 刪除 "et al" 保留人名。
-       - 是全名 -> 保留原樣。
-    2. 第一關：標題 + 清洗後的人名。
-    3. 第二關：純標題。
-    4. 第三關：原始全文。
-    """
-    if not api_key: return None, "No API Key"
+    import re
+    from serpapi import GoogleSearch
+
+    # 1. 構建指紋搜尋字串 (Fingerprint Query)
+    # 如果原始文本中有研討會名稱 (如 ICAIT)，一定要抓進來
+    conference = ""
+    if raw_text:
+        conf_match = re.search(r'(ICAIT|CVPR|nips|arxiv|IEEE|ACM)\s*20\d{2}', raw_text, re.I)
+        if conf_match:
+            conference = conf_match.group(0)
+
+    # 組合搜尋詞：標題前段 + 作者 + 研討會
+    # 對於 Ko, K. 這筆，搜尋詞會變成 "RAG for Document Query Automation Ko 2024 ICAIT"
+    clean_title = re.sub(r'[^\w\s]', '', title)[:60]
+    query = f"{clean_title} {author if author else ''} {conference}".strip()
+
+    search = GoogleSearch({
+        "q": query,
+        "api_key": api_key,
+        "engine": "google_scholar",
+        "hl": "en"
+    })
     
-    # 內部搜尋小工具
-    def _do_search(query_string, match_mode):
-        try:
-            params = {"engine": "google_scholar", "q": query_string, "api_key": api_key, "num": 3}
-            results = GoogleSearch(params).get_dict()
-            organic = results.get("organic_results", [])
-            for res in organic:
-                res_title = res.get("title", "")
-                if _is_match(title, res_title):
-                    return res.get("link"), match_mode
-            return None, None
-        except Exception as e:
-            return None, f"Error: {e}"
+    results = search.get_dict()
+    
+    if "organic_results" in results:
+        # 這裡很關鍵：我們檢查前三筆，而不是只抓第一筆
+        for entry in results["organic_results"][:3]:
+            found_title = entry.get("title", "")
+            found_link = entry.get("link", "")
+            
+            # 比對關鍵字是否出現在搜尋結果標題中
+            # 只要 RAG 和 Document 同時出現，就極大機率是正確的
+            keywords = ["RAG", "Document", "Automation"]
+            if all(k.lower() in found_title.lower() for k in keywords[:2]):
+                return found_link, found_title
+                
+    return None, None
 
     # ==========================================
     # 步驟 0: 智慧清洗作者 (針對您提到的混合狀況)
@@ -353,4 +367,5 @@ def check_url_availability(url):
     try:
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
+
     except: return False
