@@ -1,15 +1,16 @@
 # app.py (一鍵報表自動化版 - 標題補強地端版)
 
-import streamlit as st
 import subprocess
 import os
+import streamlit as st
 
-# 檢查 anystyle 是否已安裝，若無則安裝 (這只會在雲端伺服器啟動時執行一次)
+# 檢查 anystyle 是否已安裝，若無則安裝
 try:
     subprocess.run(["anystyle", "--version"], capture_output=True, check=True)
 except (subprocess.CalledProcessError, FileNotFoundError):
-    with st.spinner("正在初始化學術解析引擎 (AnyStyle)，請稍候..."):
-        subprocess.run(["gem", "install", "anystyle"], check=True)
+    with st.spinner("正在部署核心引擎 (AnyStyle)... 這可能需要 1-2 分鐘"):
+        # --no-document 可以加快安裝速度並減少出錯
+        subprocess.run(["gem", "install", "anystyle", "--no-document"], check=True)
 import pandas as pd
 import time
 import os
