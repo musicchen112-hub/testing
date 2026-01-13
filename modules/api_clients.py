@@ -61,44 +61,40 @@ def _check_author_match(query_author, result_authors_list):
 def _is_match(query, result):
     if not query or not result: return False
     
-    # 預清洗
-    def normalize(text):
-        # 移除標籤 [PDF], [HTML], [DOC] 等
-        text = re.sub(r'\[(PDF|HTML|DOC|B|HTML)\]', '', text, flags=re.IGNORECASE)
-        # 移除年份與常見學術雜訊
+    # 1. 超強效正規化：只留下純英文字母與數字，並移除 common noise
+    def extreme_clean(text):
+        # 移除 [PDF], [HTML], [Full Text] 等學術標籤
+        text = re.sub(r'\[.*?\]', '', str(text)) 
+        # 移除年份 (2024...)
         text = re.sub(r'\b(19|20)\d{2}\b', '', text)
-        text = re.sub(r'\b(arxiv|biorxiv|available|online|access|icait|cvpr|nips|ieee|acm)\b', '', text, flags=re.IGNORECASE)
-        # 只保留字母與數字，轉小寫
-        return re.sub(r'[^a-z0-9]', '', text.lower())
+        # 轉小寫並只留字母數字
+        cleaned = re.sub(r'[^a-z0-9]', '', text.lower())
+        return cleaned
 
-    c_q = normalize(query)
-    c_r = normalize(result)
+    c_q = extreme_clean(query)
+    c_r = extreme_clean(result)
 
     if not c_q or not c_r: return False
 
-    # 1. 絕對包含 (救回 Ko, K. 的關鍵)
-    # 如果搜尋結果包含標題的核心 (或是反過來)，直接通過
+    # 策略 A：直接包含（最有效）
     if c_q in c_r or c_r in c_q:
         return True
 
-    # 2. 模糊相似度 (調降門檻，學術標題差異常在標點符號)
-    ratio = SequenceMatcher(None, c_q, c_r).ratio()
-    if ratio >= 0.7: # 從 0.8 調降，更容錯
-        return True
-
-    # 3. 關鍵字指紋比對 (針對長標題)
-    # 只要標題中超過 4 個字以上的長單字有 70% 匹配，就視為成功
-    q_long_words = [w for w in re.findall(r'[a-z]{4,}', query.lower()) if w not in ['from', 'with', 'this', 'that', 'using']]
-    r_long_words = [w for w in re.findall(r'[a-z]{4,}', result.lower())]
-    
-    if q_long_words:
-        matches = sum(1 for w in q_long_words if w in r_long_words)
-        match_rate = matches / len(q_long_words)
-        if match_rate >= 0.7:
+    # 策略 B：針對 Ko, K. 的特殊情況：長單字指紋比對
+    # 找出 query 中超過 5 個字母的單字 (例如 Automation, Document, OpenSource)
+    q_keywords = [w for w in re.findall(r'[a-z]{5,}', query.lower())]
+    if q_keywords:
+        match_count = sum(1 for w in q_keywords if w in result.lower())
+        # 只要有一半以上的長單字對中，就判定為正確
+        if match_count / len(q_keywords) >= 0.6:
             return True
 
-    return False
+    # 策略 C：模糊比對（門檻再降一點點）
+    ratio = SequenceMatcher(None, c_q, c_r).ratio()
+    if ratio >= 0.65: # 針對學術標題，65% 已經非常精確了
+        return True
 
+    return False
 # --- API 呼叫輔助 ---
 def _call_external_api_with_retry(url: str, params: dict, headers=None):
     if not headers: headers = {'User-Agent': 'ReferenceChecker/1.0'}
@@ -254,3 +250,4 @@ def check_url_availability(url):
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
     except: return False
+
