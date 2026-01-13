@@ -1,23 +1,34 @@
-# app.py (一鍵報表自動化版 - 標題補強地端版)
-
-import subprocess
-import os
+# app.py 雲端穩定 + 一鍵報表版
 import streamlit as st
-
-# 檢查 anystyle 是否已安裝，若無則安裝
-try:
-    subprocess.run(["anystyle", "--version"], capture_output=True, check=True)
-except (subprocess.CalledProcessError, FileNotFoundError):
-    with st.spinner("正在部署核心引擎 (AnyStyle)... 這可能需要 1-2 分鐘"):
-        # --no-document 可以加快安裝速度並減少出錯
-        subprocess.run(["gem", "install", "anystyle", "--no-document"], check=True)
 import pandas as pd
 import time
 import os
 import re
-import ast
-import difflib
+import ast 
+import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ========== 1. 雲端環境自動修復 (保留原始補丁) ==========
+def ensure_anystyle_installed():
+    possible_paths = [
+        "/home/appuser/.local/share/gem/ruby/3.1.0/bin",
+        "/home/adminuser/.local/share/gem/ruby/3.1.0/bin",
+        subprocess.getoutput("ruby -e 'print Gem.user_dir'") + "/bin"
+    ]
+    for p in possible_paths:
+        if p not in os.environ["PATH"]:
+            os.environ["PATH"] = p + os.pathsep + os.environ["PATH"]
+
+    try:
+        subprocess.run(["anystyle", "--version"], capture_output=True, check=True)
+    except:
+        with st.spinner("☁️ 正在初始化雲端 AnyStyle 環境..."):
+            os.system("gem install anystyle-cli --user-install")
+            new_path = subprocess.getoutput("ruby -e 'print Gem.user_dir'") + "/bin"
+            if new_path not in os.environ["PATH"]:
+                os.environ["PATH"] = new_path + os.pathsep + os.environ["PATH"]
+
+ensure_anystyle_installed()
 
 # 導入自定義模組
 from modules.parsers import parse_references_with_anystyle
