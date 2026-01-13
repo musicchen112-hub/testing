@@ -7,6 +7,7 @@ import os
 import re
 import ast 
 import subprocess
+import difflib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ========== [雲端環境專用：自動初始化 AnyStyle] ==========
@@ -116,53 +117,62 @@ def refine_parsed_data(parsed_item):
 def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_key):
     ref = refine_parsed_data(raw_ref)
     title, text = ref.get('title', ''), ref.get('text', '')
-    search_query = title if (title and len(title) > 8) else text[:120]
     doi, parsed_url = ref.get('doi'), ref.get('url')
     first_author = ref['authors'].split(';')[0].split(',')[0].strip() if ref.get('authors') else ""
-
+    year = str(ref.get('date', ''))[:4]
+    
     res = {"id": idx, "title": title, "text": text, "parsed": ref, "sources": {}, "found_at_step": None, "suggestion": None}
 
-    if bool(re.search(r'[\u4e00-\u9fff]', search_query)) and local_df is not None and title:
+    # --- [新增：嚴格比對工具函數] ---
+    def is_title_match(found_title, target_title, threshold=0.75):
+        if not found_title or not target_title: return False
+        # 清洗標點與空白
+        t1 = re.sub(r'[^\w\s]', '', str(found_title).lower())
+        t2 = re.sub(r'[^\w\s]', '', str(target_title).lower())
+        return difflib.SequenceMatcher(None, t1, t2).ratio() >= threshold
+
+    # 1. Local DB (維持原樣)
+    if bool(re.search(r'[\u4e00-\u9fff]', title)) and local_df is not None and title:
         match_row, _ = search_local_database(local_df, target_col, title, threshold=0.85)
         if match_row is not None:
             res.update({"sources": {"Local DB": "匹配成功"}, "found_at_step": "0. Local Database"})
             return res
 
-    if doi:
-        _, url, _ = search_crossref_by_doi(doi, target_title=title if title else None)
-        if url: 
-            res.update({"sources": {"Crossref": url}, "found_at_step": "1. Crossref (DOI)"})
-            return res
-    
-    url, _ = search_crossref_by_text(search_query, first_author)
-    if url:
-        res.update({"sources": {"Crossref": url}, "found_at_step": "1. Crossref (Search)"})
+    # 2. Crossref 搜尋 (加入標題驗證)
+    # 使用標題作為查詢，避免全文過長導致亂抓
+    url_cr, cr_title = search_crossref_by_text(title, first_author)
+    if url_cr and is_title_match(cr_title, title):
+        res.update({"sources": {"Crossref": url_cr}, "found_at_step": "1. Crossref"})
         return res
 
-    if scopus_key:
-        url, _ = search_scopus_by_title(search_query, scopus_key, author=first_author)
-        if url:
-            res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
-            return res
-
+    # 3. Google Scholar 搜尋 (補強搜尋與嚴格過濾)
     if serpapi_key:
         try:
-            url, _ = search_scholar_by_title(search_query, serpapi_key, author=first_author, raw_text=text)
-            if url:
-                res.update({"sources": {"Google Scholar": url}, "found_at_step": "5. Google Scholar"})
+            # 策略 A：使用精確標題搜尋 (加雙引號)
+            url_gs, gs_title = search_scholar_by_title(f'"{title}"', serpapi_key, author=first_author)
+            
+            # 策略 B：如果失敗 (針對 ID 3 等新論文)，改用寬鬆關鍵字組合
+            if not url_gs or not is_title_match(gs_title, title):
+                fallback_query = f"{title} {first_author} {year}"
+                url_gs, gs_title = search_scholar_by_title(fallback_query, serpapi_key)
+
+            # 【關鍵過濾】只有標題對得上的才算成功
+            if url_gs and is_title_match(gs_title, title):
+                res.update({"sources": {"Google Scholar": url_gs}, "found_at_step": "5. Google Scholar"})
                 return res
+            elif url_gs:
+                # 標題不合，丟到建議區，不視為「已驗證」
+                res["suggestion"] = url_gs
         except: pass
 
-    if serpapi_key:
-        url_r, _ = search_scholar_by_ref_text(text, serpapi_key, target_title=title)
-        if url_r: res["suggestion"] = url_r
+    # 4. 檢查原文是否自帶網址 (ID 8, 9 的情況)
+    if not res["found_at_step"]:
+        found_urls = re.findall(r'https?://[^\s)\]]+', text)
+        for u in found_urls:
+            if "google" not in u and check_url_availability(u): # 排除搜尋引擊連結
+                res.update({"sources": {"Direct Link": u}, "found_at_step": "6. Website Check"})
+                return res
 
-    if parsed_url and parsed_url.startswith('http'):
-        if check_url_availability(parsed_url):
-            res.update({"sources": {"Direct Link": parsed_url}, "found_at_step": "6. Website / Direct URL"})
-        else:
-            res.update({"sources": {"Direct Link (Dead)": parsed_url}, "found_at_step": "6. Website (Link Failed)"})
-    
     return res
 
 # ========== 側邊欄與介面 (維持同學 UI) ==========
