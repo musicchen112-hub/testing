@@ -236,14 +236,33 @@ if st.session_state.results:
     st.divider()
     st.markdown("### 📊 第二步：查核結果與報表下載")
     
-    # 統計 (保持原樣)
+    # 統計卡片 (保持原樣)
     total_refs = len(st.session_state.results)
     verified_db = sum(1 for r in st.session_state.results if r.get('found_at_step') and "6." not in str(r.get('found_at_step')))
+    failed_refs = total_refs - verified_db
     
     col1, col2, col3 = st.columns(3)
     col1.metric("總查核筆數", total_refs)
     col2.metric("資料庫匹配成功", verified_db)
-    col3.metric("需人工確認/修正", total_refs - verified_db)
+    col3.metric("需人工確認/修正",  failed_refs, delta_color="inverse")
+
+     # 下載報表（維持原樣）
+    df_export = pd.DataFrame([{
+        "ID": r['id'],
+        "狀態": r['found_at_step'] if r['found_at_step'] else "未找到",
+        "抓取標題": r['title'],
+        "原始文獻內容": r['text'],
+        "驗證來源連結": next(iter(r['sources'].values()), "N/A") if r['sources'] else "N/A"
+    } for r in st.session_state.results])
+
+    csv_data = df_export.to_csv(index=False).encode('utf-8-sig')
+    st.download_button(
+        label="📥 下載完整查核報告 (Excel 可開 CSV)",
+        data=csv_data,
+        file_name=f"Citation_Check_{time.strftime('%Y%m%d_%H%M')}.csv",
+        mime="text/csv",
+        use_container_width=True
+    )
 
     # 4. 查核清單明細 (修正核心：防止 NoneType iterable 錯誤)
     st.markdown("---")
