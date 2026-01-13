@@ -94,67 +94,49 @@ def refine_parsed_data(parsed_item):
 
     # =========================================================
     # [NEW] Patch 1: 修復 "第二作者殘留" 問題
-    # 針對: "& Heinzl, A.(2021). Real Title" 這種解析錯誤
     # =========================================================
     if title and (title.startswith('&') or title.lower().startswith('and ')):
-        # Regex 邏輯：
-        # ^&             -> 以 & 開頭
-        # .+?            -> 中間任何非年份的字 (人名)
-        # \(?\d{4}\)?    -> 抓到年份 (例如 2021 或 (2021))
-        # [\.\s]+        -> 年份後的句點或空白
-        # (.*)           -> 抓取剩餘的真實標題
         fix_match = re.search(r'^&(?:amp;)?\s*[^0-9]+?\(?\d{4}\)?[\.\s]+(.*)', title)
         if fix_match:
             cleaned_title = fix_match.group(1).strip()
-            # 確保切完剩下的長度夠長，才替換 (避免切壞)
             if len(cleaned_title) > 5:
                 title = cleaned_title
                 item['title'] = title
 
-
-     # =========================================================
-     # [NEW] Patch 2: 強力去噪 (針對 "2024. Title" 或 "Title. arXiv")
-     # =========================================================
-if title:
-        # 去掉開頭的 4 位數字年份與標點 (例如 "2024. ")
+    # =========================================================
+    # [NEW] Patch 2: 強力去噪
+    # =========================================================
+    if title:
         title = re.sub(r'^\s*\d{4}[\.\s]+', '', title)
-        
-        # 去掉結尾的 arXiv, Available at... 等常見雜訊
         title = re.sub(r'(?i)\.?\s*arXiv.*$', '', title)
         title = re.sub(r'(?i)\.?\s*Available.*$', '', title)
-        
         item['title'] = title
-    # 2. 標題補救機制 (針對標題太短或解析錯誤)
-if not title or len(title) < 5:
-        # [Pattern A] 針對 "縮寫: 完整標題" (如 StyleTTS 2)
+
+    # 2. 標題補救機制
+    if not title or len(title) < 5:
         abbr_match = re.search(r'^([A-Z0-9\-\.\s]{2,12}:\s*.+?)(?=\s*[,\[]|\s*Available|\s*\(|\bhttps?://|\.|$)', raw_text)
         if abbr_match:
             item['title'] = abbr_match.group(1).strip()
         else:
-            # [Pattern B] AnyStyle 誤判為出版商或期刊
             for backup_key in ['publisher', 'container-title', 'journal']:
                 val = item.get(backup_key)
                 if val and len(str(val)) > 15:
                     item['title'] = str(val).strip()
                     break
 
-    
-    # [Pattern C] 年份定位法 (使用年份去原文找標題)
-        if (not item.get('title') or item['title'] == 'N/A') and item.get('date'):
-            year_str = str(item['date'])[0:4] 
-            if year_str.isdigit():
-                # 抓取年份後面的內容
-                fallback_match = re.search(rf'{year_str}\W+\s*(.+)', raw_text)
-                if fallback_match:
-                    candidate = fallback_match.group(1).strip()
-                    # 這裡也要做一次雜訊清洗，確保補救回來的標題乾淨
-                    candidate = re.sub(r'(?i)\.?\s*arXiv.*$', '', candidate)
-                    candidate = re.sub(r'(?i)\.?\s*Available.*$', '', candidate)
-                    
-                    if len(candidate) > 5:
-                        item['title'] = candidate.strip(' .')
-                
-    # 3. DOI 提取 (保持原樣)
+    # [Pattern C] 年份定位法
+    if (not item.get('title') or item['title'] == 'N/A') and item.get('date'):
+        year_str = str(item['date'])[0:4] 
+        if year_str.isdigit():
+            fallback_match = re.search(rf'{year_str}\W+\s*(.+)', raw_text)
+            if fallback_match:
+                candidate = fallback_match.group(1).strip()
+                candidate = re.sub(r'(?i)\.?\s*arXiv.*$', '', candidate)
+                candidate = re.sub(r'(?i)\.?\s*Available.*$', '', candidate)
+                if len(candidate) > 5:
+                    item['title'] = candidate.strip(' .')
+
+    # 3. DOI 提取
     url_val = item.get('url', '')
     if url_val:
         doi_match = re.search(r'(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)', url_val)
@@ -167,7 +149,6 @@ if not title or len(title) < 5:
 def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_key):
     ref = refine_parsed_data(raw_ref)
     title, text = ref.get('title', ''), ref.get('text', '')
-    # 搜尋關鍵字優化：避免太長
     search_query = " ".join(title.split()[:12]) if title else text[:100]
     doi, parsed_url = ref.get('doi'), ref.get('url')
     first_author = ref['authors'].split(';')[0].split(',')[0].strip() if ref.get('authors') else ""
@@ -195,19 +176,17 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
     
     # 3. Scopus & Scholar
     if scopus_key:
-        # 傳入 first_author 進行作者比對
         url, _ = search_scopus_by_title(search_query, scopus_key, author=first_author)
         if url:
             res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
             return res
 
-    # 修改這裡的列表，將 Google Scholar 的 lambda 補上 first_author
     for api_func, step_name in [(lambda: search_scholar_by_title(
-    search_query, 
-    serpapi_key, 
-    author=first_author,     # 傳入作者 (會被上面的邏輯自動清洗)
-    raw_text=raw_ref['text'] # 傳入全文 (給第三關用)
-), "5. Google Scholar")]:
+        search_query, 
+        serpapi_key, 
+        author=first_author, 
+        raw_text=raw_ref['text']
+    ), "5. Google Scholar")]:
         try:
             url, _ = api_func()
             if url:
@@ -215,8 +194,7 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
                 return res
         except: pass
 
-
-    # 4. Suggestion (Scholar Text Search)
+    # 4. Suggestion
     if serpapi_key:
         url_r, _ = search_scholar_by_ref_text(text, serpapi_key, target_title=title)
         if url_r: res["suggestion"] = url_r
@@ -229,8 +207,7 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
             res.update({"sources": {"Direct Link (Dead)": parsed_url}, "found_at_step": "6. Website (Link Failed)"})
     return res
 
-# ========== 側邊欄與 UI 邏輯 (完全保持原樣) ==========
-
+# ========== 側邊欄與 UI 邏輯 ==========
 with st.sidebar:
     st.header("⚙️ 系統設定")
     DEFAULT_CSV_PATH = "112ndltd.csv"
@@ -270,13 +247,11 @@ if st.button("🚀 開始全自動核對並生成報表", type="primary", use_co
                 st.session_state.results = sorted(results_buffer, key=lambda x: x['id'])
                 status.update(label="✅ 核對作業完成！", state="complete", expanded=False)
 
-# ========== 報表顯示與過濾 (防崩潰修正) ==========
-
+# ========== 報表顯示與過濾 ==========
 if st.session_state.results:
     st.divider()
     st.markdown("### 📊 第二步：查核結果與報表下載")
     
-    # 統計卡片 (保持原樣)
     total_refs = len(st.session_state.results)
     verified_db = sum(1 for r in st.session_state.results if r.get('found_at_step') and "6." not in str(r.get('found_at_step')))
     failed_refs = total_refs - verified_db
@@ -284,9 +259,8 @@ if st.session_state.results:
     col1, col2, col3 = st.columns(3)
     col1.metric("總查核筆數", total_refs)
     col2.metric("資料庫匹配成功", verified_db)
-    col3.metric("需人工確認/修正",  failed_refs, delta_color="inverse")
+    col3.metric("需人工確認/修正", failed_refs, delta_color="inverse")
 
-     # 下載報表（維持原樣）
     df_export = pd.DataFrame([{
         "ID": r['id'],
         "狀態": r['found_at_step'] if r['found_at_step'] else "未找到",
@@ -304,7 +278,6 @@ if st.session_state.results:
         use_container_width=True
     )
 
-    # 4. 查核清單明細 (修正核心：防止 NoneType iterable 錯誤)
     st.markdown("---")
     st.markdown("#### 🔍 查核清單明細")
     
@@ -315,11 +288,9 @@ if st.session_state.results:
     )
 
     for r in st.session_state.results:
-        # [防崩潰關鍵]：確保 step 為字串且不為 None
         raw_step = r.get('found_at_step')
         step = str(raw_step) if raw_step is not None else ""
         
-        # 決定是否顯示
         show = False
         if filter_option == "全部顯示": show = True
         elif filter_option == "✅ 資料庫驗證" and step and "6." not in step and "Failed" not in step: show = True
@@ -336,6 +307,5 @@ if st.session_state.results:
                     for src, link in r['sources'].items(): st.write(f"- {src}: {link}")
                 if (not step or "Failed" in step) and r.get("suggestion"):
                     st.info(f"💡 [手動搜尋建議]({r['suggestion']})")
-
 else:
     st.info("💡 目前尚無結果。請在上方輸入框貼上文獻，並點擊按鈕開始。")
