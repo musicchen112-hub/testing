@@ -6,6 +6,7 @@ import os
 import re
 import ast 
 import subprocess
+import difflib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ========== 1. 雲端環境自動修復 (保留原始補丁) ==========
