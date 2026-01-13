@@ -47,20 +47,6 @@ from modules.api_clients import (
     check_url_availability
 )
 
-# ========== 核心修正工具函數 (保持你的格式) ==========
-
-def fuzzy_match(s1, s2, threshold=0.7):
-    if not s1 or not s2: return False
-    s1, s2 = str(s1).strip().lower(), str(s2).strip().lower()
-    return difflib.SequenceMatcher(None, s1, s2).ratio() >= threshold
-
-def pre_process_raw_text(text):
-    # 修復 Assink, L. M.(2019) 這種人名與年份粘連
-    text = re.sub(r'([a-zA-Z\.])(\(\d{4}\))', r'\1 \2', text)
-    # 修復句點後無空格
-    text = re.sub(r'\.([A-Z])', r'. \1', text)
-    return text
-
 # ========== 頁面設定與樣式 (保持原樣) ==========
 st.set_page_config(page_title="引文查核報表工具", page_icon="📊", layout="wide")
 
@@ -97,31 +83,77 @@ def format_name_field(data):
 
 def refine_parsed_data(parsed_item):
     item = parsed_item.copy()
-    raw_text = pre_process_raw_text(item.get('text', '').strip())
-    
-    # 1. 基礎清洗
+    raw_text = item.get('text', '').strip()
+
+    # 1. 基礎符號清洗
     for key in ['doi', 'url', 'title', 'date']:
         if item.get(key) and isinstance(item[key], str):
             item[key] = item[key].strip(' ,.;)]}>')
 
     title = item.get('title', '')
 
-    # [核心修補]：解決作者殘留、年份前導、arXiv等雜訊
-    if title:
-        # 去掉開頭殘留資訊 (例如 & Heinzl, A.(2021).)
-        title = re.sub(r'^.*?&\s*[^0-9]+?\(?\d{4}\)?[\.\s]+', '', title)
-        # 去掉結尾出版商/來源雜訊
-        noise = r'(?i)\.?\s*(arXiv|Available|CSO Online|HuggingFace|ADIPEC|ICAIT|CVPR|IEEE Access|Procedia|Journal of.*)$'
-        title = re.sub(noise, '', title).strip()
+    # =========================================================
+    # [NEW] Patch 1: 修復 "第二作者殘留" 問題
+    # 針對: "& Heinzl, A.(2021). Real Title" 這種解析錯誤
+    # =========================================================
+    if title and (title.startswith('&') or title.lower().startswith('and ')):
+        # Regex 邏輯：
+        # ^&             -> 以 & 開頭
+        # .+?            -> 中間任何非年份的字 (人名)
+        # \(?\d{4}\)?    -> 抓到年份 (例如 2021 或 (2021))
+        # [\.\s]+        -> 年份後的句點或空白
+        # (.*)           -> 抓取剩餘的真實標題
+        fix_match = re.search(r'^&(?:amp;)?\s*[^0-9]+?\(?\d{4}\)?[\.\s]+(.*)', title)
+        if fix_match:
+            cleaned_title = fix_match.group(1).strip()
+            # 確保切完剩下的長度夠長，才替換 (避免切壞)
+            if len(cleaned_title) > 5:
+                title = cleaned_title
+                item['title'] = title
+
+
+     # =========================================================
+     # [NEW] Patch 2: 強力去噪 (針對 "2024. Title" 或 "Title. arXiv")
+     # =========================================================
+     if title:
+        # 去掉開頭的 4 位數字年份與標點 (例如 "2024. ")
+        title = re.sub(r'^\s*\d{4}[\.\s]+', '', title)
+        
+        # 去掉結尾的 arXiv, Available at... 等常見雜訊
+        title = re.sub(r'(?i)\.?\s*arXiv.*$', '', title)
+        title = re.sub(r'(?i)\.?\s*Available.*$', '', title)
+        
         item['title'] = title
-
     # 2. 標題補救機制 (針對標題太短或解析錯誤)
-    if not item.get('title') or len(item['title']) < 8:
-        # 嘗試從年份後面抓取一長串
-        fallback = re.search(r'\(?\d{4}\)?[\.\s]+([^,.]{10,120})', raw_text)
-        if fallback:
-            item['title'] = fallback.group(1).strip(' .')
+    if not title or len(title) < 5:
+        # [Pattern A] 針對 "縮寫: 完整標題" (如 StyleTTS 2)
+        abbr_match = re.search(r'^([A-Z0-9\-\.\s]{2,12}:\s*.+?)(?=\s*[,\[]|\s*Available|\s*\(|\bhttps?://|\.|$)', raw_text)
+        if abbr_match:
+            item['title'] = abbr_match.group(1).strip()
+        else:
+            # [Pattern B] AnyStyle 誤判為出版商或期刊
+            for backup_key in ['publisher', 'container-title', 'journal']:
+                val = item.get(backup_key)
+                if val and len(str(val)) > 15:
+                    item['title'] = str(val).strip()
+                    break
 
+    
+    # [Pattern C] 年份定位法 (使用年份去原文找標題)
+        if (not item.get('title') or item['title'] == 'N/A') and item.get('date'):
+            year_str = str(item['date'])[0:4] 
+            if year_str.isdigit():
+                # 抓取年份後面的內容
+                fallback_match = re.search(rf'{year_str}\W+\s*(.+)', raw_text)
+                if fallback_match:
+                    candidate = fallback_match.group(1).strip()
+                    # 這裡也要做一次雜訊清洗，確保補救回來的標題乾淨
+                    candidate = re.sub(r'(?i)\.?\s*arXiv.*$', '', candidate)
+                    candidate = re.sub(r'(?i)\.?\s*Available.*$', '', candidate)
+                    
+                    if len(candidate) > 5:
+                        item['title'] = candidate.strip(' .')
+                
     # 3. DOI 提取 (保持原樣)
     url_val = item.get('url', '')
     if url_val:
@@ -142,12 +174,6 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
 
     res = {"id": idx, "title": title, "text": text, "parsed": ref, "sources": {}, "found_at_step": None, "suggestion": None}
 
-    def verify_success(u, t, label):
-        if u and (not title or fuzzy_match(title, t)):
-            res.update({"sources": {label.split(". ")[1]: u}, "found_at_step": label})
-            return True
-        return False
-
     # 1. Local DB
     if bool(re.search(r'[\u4e00-\u9fff]', search_query)) and local_df is not None and title:
         match_row, _ = search_local_database(local_df, target_col, title, threshold=0.85)
@@ -157,24 +183,38 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
 
     # 2. Crossref
     if doi:
-        api_t, api_u, _ = search_crossref_by_doi(doi)
-        if verify_success(api_u, api_t, "1. Crossref (DOI)"): return res
-
-    u, t = search_crossref_by_text(search_query, first_author)
-    if verify_success(u, t, "1. Crossref (Search)"): return res
-
+        _, url, _ = search_crossref_by_doi(doi, target_title=title if title else None)
+        if url: 
+            res.update({"sources": {"Crossref": url}, "found_at_step": "1. Crossref (DOI)"})
+            return res
+    
+    url, _ = search_crossref_by_text(search_query, first_author)
+    if url:
+        res.update({"sources": {"Crossref": url}, "found_at_step": "1. Crossref (Search)"})
+        return res
+    
     # 3. Scopus & Scholar
     if scopus_key:
+        # 傳入 first_author 進行作者比對
+        url, _ = search_scopus_by_title(search_query, scopus_key, author=first_author)
+        if url:
+            res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
+            return res
+
+    # 修改這裡的列表，將 Google Scholar 的 lambda 補上 first_author
+    for api_func, step_name in [(lambda: search_scholar_by_title(
+    search_query, 
+    serpapi_key, 
+    author=first_author,     # 傳入作者 (會被上面的邏輯自動清洗)
+    raw_text=raw_ref['text'] # 傳入全文 (給第三關用)
+), "5. Google Scholar")]:
         try:
-            u, t = search_scopus_by_title(search_query, scopus_key, author=first_author)
-            if verify_success(u, t, "2. Scopus"): return res
+            url, _ = api_func()
+            if url:
+                res.update({"sources": {step_name.split(". ")[1]: url}, "found_at_step": step_name})
+                return res
         except: pass
 
-    if serpapi_key:
-        try:
-            u, t = search_scholar_by_title(search_query, serpapi_key, author=first_author, raw_text=text)
-            if verify_success(u, t, "5. Google Scholar"): return res
-        except: pass
 
     # 4. Suggestion (Scholar Text Search)
     if serpapi_key:
