@@ -125,7 +125,7 @@ if title:
         
         item['title'] = title
     # 2. 標題補救機制 (針對標題太短或解析錯誤)
-    if not title or len(title) < 5:
+if not title or len(title) < 5:
         # [Pattern A] 針對 "縮寫: 完整標題" (如 StyleTTS 2)
         abbr_match = re.search(r'^([A-Z0-9\-\.\s]{2,12}:\s*.+?)(?=\s*[,\[]|\s*Available|\s*\(|\bhttps?://|\.|$)', raw_text)
         if abbr_match:
