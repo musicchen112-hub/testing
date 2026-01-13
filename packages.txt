@@ -1,2 +1,5 @@
-ruby-full
+ruby
+ruby-dev
 build-essential
+libxml2-dev
+libxslt-dev
