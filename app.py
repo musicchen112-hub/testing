@@ -1,6 +1,15 @@
 # app.py (一鍵報表自動化版 - 標題補強地端版)
 
 import streamlit as st
+import subprocess
+import os
+
+# 檢查 anystyle 是否已安裝，若無則安裝 (這只會在雲端伺服器啟動時執行一次)
+try:
+    subprocess.run(["anystyle", "--version"], capture_output=True, check=True)
+except (subprocess.CalledProcessError, FileNotFoundError):
+    with st.spinner("正在初始化學術解析引擎 (AnyStyle)，請稍候..."):
+        subprocess.run(["gem", "install", "anystyle"], check=True)
 import pandas as pd
 import time
 import os
