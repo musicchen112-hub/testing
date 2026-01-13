@@ -61,37 +61,43 @@ def _check_author_match(query_author, result_authors_list):
 def _is_match(query, result):
     if not query or not result: return False
     
-    # 1. 超強效正規化：只留下純英文字母與數字，並移除 common noise
     def extreme_clean(text):
-        # 移除 [PDF], [HTML], [Full Text] 等學術標籤
         text = re.sub(r'\[.*?\]', '', str(text)) 
-        # 移除年份 (2024...)
         text = re.sub(r'\b(19|20)\d{2}\b', '', text)
-        # 轉小寫並只留字母數字
-        cleaned = re.sub(r'[^a-z0-9]', '', text.lower())
-        return cleaned
+        # 移除太短的雜訊字 (2個字母以下的)
+        words = re.findall(r'\b[a-z]{3,}\b', text.lower())
+        return "".join(words), words
 
-    c_q = extreme_clean(query)
-    c_r = extreme_clean(result)
+    c_q_str, q_words = extreme_clean(query)
+    c_r_str, r_words = extreme_clean(result)
 
-    if not c_q or not c_r: return False
+    if not q_words or not r_words: return False
 
-    # 策略 A：直接包含（最有效）
-    if c_q in c_r or c_r in c_q:
+    # --- 1. 計算相似度比例 ---
+    ratio = SequenceMatcher(None, c_q_str, c_r_str).ratio()
+
+    # --- 2. 關鍵字命中檢查 (核心保險) ---
+    # 找出 query 中最重要的長單字 (長度 > 5)
+    key_keywords = [w for w in q_words if len(w) > 5 and w not in ['using', 'through', 'based', 'from']]
+    
+    # 如果有長單字，至少要命中一半以上
+    if key_keywords:
+        hits = sum(1 for w in key_keywords if w in c_r_str)
+        hit_rate = hits / len(key_keywords)
+    else:
+        hit_rate = 1.0 # 沒長單字就不計
+
+    # --- 3. 判定邏輯 (精準平衡) ---
+    # 狀況 A: 相似度極高 (基本就是同一篇)
+    if ratio > 0.85:
         return True
-
-    # 策略 B：針對 Ko, K. 的特殊情況：長單字指紋比對
-    # 找出 query 中超過 5 個字母的單字 (例如 Automation, Document, OpenSource)
-    q_keywords = [w for w in re.findall(r'[a-z]{5,}', query.lower())]
-    if q_keywords:
-        match_count = sum(1 for w in q_keywords if w in result.lower())
-        # 只要有一半以上的長單字對中，就判定為正確
-        if match_count / len(q_keywords) >= 0.6:
-            return True
-
-    # 策略 C：模糊比對（門檻再降一點點）
-    ratio = SequenceMatcher(None, c_q, c_r).ratio()
-    if ratio >= 0.65: # 針對學術標題，65% 已經非常精確了
+    
+    # 狀況 B: 相似度中等，但核心關鍵字命中率高 (救回 Ko, K.)
+    if ratio > 0.5 and hit_rate >= 0.6:
+        return True
+        
+    # 狀況 C: 包含關係，但必須滿足最低相似度 (防止像 ID 11 那種完全無關的包含)
+    if (c_q_str in c_r_str or c_r_str in c_q_str) and ratio > 0.4:
         return True
 
     return False
@@ -250,4 +256,5 @@ def check_url_availability(url):
         resp = requests.head(url, timeout=5, allow_redirects=True, verify=False)
         return 200 <= resp.status_code < 400
     except: return False
+
 
