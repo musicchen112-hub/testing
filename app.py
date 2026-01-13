@@ -198,18 +198,18 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
             res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
             return res
 
-    for api_func, step_name in [(lambda: search_scholar_by_title(
-        search_query, 
-        serpapi_key, 
-        author=first_author, 
-        raw_text=raw_ref['text']
-    ), "5. Google Scholar")]:
-        try:
-            url, _ = api_func()
-            if url:
-                res.update({"sources": {step_name.split(". ")[1]: url}, "found_at_step": step_name})
+    # Google Scholar 模糊匹配補丁 (解決 Ko, K. et al. 縮寫問題)
+    try:
+        # 先用標準標題搜
+        url, found_title = search_scholar_by_title(search_query, serpapi_key, author=first_author, raw_text=text)
+        if url:
+            # 計算相似度
+            similarity = difflib.SequenceMatcher(None, title.lower(), str(found_title).lower()).ratio()
+            # 如果相似度高於 0.6 或 原標題在找到的標題內 (處理 RAG 縮寫)
+            if similarity > 0.6 or (title.lower() in str(found_title).lower()):
+                res.update({"sources": {"Google Scholar": url}, "found_at_step": "5. Google Scholar"})
                 return res
-        except: pass
+    except: pass
 
     # 4. Suggestion
     if serpapi_key:
