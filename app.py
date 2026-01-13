@@ -108,36 +108,7 @@ def refine_parsed_data(parsed_item):
         title = re.sub(r'(?i)\.?\s*Available.*$', '', title)
         item['title'] = title
 
-    # 2. 標題補救機制
-    if not title or len(title) < 5:
-        abbr_match = re.search(r'^([A-Z0-9\-\.\s]{2,12}:\s*.+?)(?=\s*[,\[]|\s*Available|\s*\(|\bhttps?://|\.|$)', raw_text)
-        if abbr_match:
-            item['title'] = abbr_match.group(1).strip()
-        else:
-            for backup_key in ['publisher', 'container-title', 'journal']:
-                val = item.get(backup_key)
-                if val and len(str(val)) > 15:
-                    item['title'] = str(val).strip()
-                    break
-
-    # 年份定位法
-    if (not item.get('title') or item['title'] == 'N/A') and item.get('date'):
-        year_str = str(item['date'])[0:4] 
-        if year_str.isdigit():
-            fallback_match = re.search(rf'{year_str}\W+\s*(.+)', raw_text)
-            if fallback_match:
-                candidate = fallback_match.group(1).strip()
-                candidate = re.sub(r'(?i)\.?\s*arXiv.*$', '', candidate)
-                if len(candidate) > 5:
-                    item['title'] = candidate.strip(' .')
-
-    url_val = item.get('url', '')
-    if url_val:
-        doi_match = re.search(r'(10\.\d{4,9}/[-._;()/:a-zA-Z0-9]+)', url_val)
-        if doi_match: item['doi'] = doi_match.group(1).strip('.')
-
     if item.get('authors'): item['authors'] = format_name_field(item['authors'])
-    if item.get('editor'): item['editor'] = format_name_field(item['editor'])
     return item
 
 def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_key):
@@ -146,74 +117,59 @@ def check_single_task(idx, raw_ref, local_df, target_col, scopus_key, serpapi_ke
     doi, parsed_url = ref.get('doi'), ref.get('url')
     first_author = ref['authors'].split(';')[0].split(',')[0].strip() if ref.get('authors') else ""
     year = str(ref.get('date', ''))[:4]
-    search_query = " ".join(title.split()[:12]) if title else text[:100]
-
+    
     res = {"id": idx, "title": title, "text": text, "parsed": ref, "sources": {}, "found_at_step": None, "suggestion": None}
 
     # 1. Local DB 
-    if bool(re.search(r'[\u4e00-\u9fff]', search_query)) and local_df is not None and title:
+    if bool(re.search(r'[\u4e00-\u9fff]', title)) and local_df is not None and title:
         match_row, _ = search_local_database(local_df, target_col, title, threshold=0.85)
         if match_row is not None:
             res.update({"sources": {"Local DB": "匹配成功"}, "found_at_step": "0. Local Database"})
             return res
 
-    # 2. Crossref 
-    if doi:
-        _, url, _ = search_crossref_by_doi(doi, target_title=title if title else None)
-        if url and isinstance(url, str) and url.startswith("http"):
-            res.update({"sources": {"Crossref": url}, "found_at_step": "1. Crossref (DOI)"})
-            return res
-    
-    url, _ = search_crossref_by_text(search_query, first_author)
-    if url and isinstance(url, str) and url.startswith("http"):
-        res.update({"sources": {"Crossref": url}, "found_at_step": "1. Crossref (Search)"})
+    # 2. Crossref & Scopus (嚴格匹配)
+    url_cr, _ = search_crossref_by_text(title, first_author)
+    if url_cr and isinstance(url_cr, str) and url_cr.startswith("http"):
+        res.update({"sources": {"Crossref": url_cr}, "found_at_step": "1. Crossref"})
         return res
-    
-    # 3. Scopus
-    if scopus_key:
-        url, _ = search_scopus_by_title(search_query, scopus_key, author=first_author)
-        if url and isinstance(url, str) and url.startswith("http"):
-            res.update({"sources": {"Scopus": url}, "found_at_step": "2. Scopus"})
-            return res
 
-    # 4. Semantic Scholar & OpenAlex (關鍵修正點：加入 isinstance 檢查，過濾 (None, 'Error'))
+    # 3. Semantic Scholar & OpenAlex (防止 (None, 'Error'))
     try:
-        url_s2 = search_s2_by_title(search_query)
+        url_s2 = search_s2_by_title(title)
         if url_s2 and isinstance(url_s2, str) and url_s2.startswith("http"):
             res.update({"sources": {"Semantic Scholar": url_s2}, "found_at_step": "3. Semantic Scholar"})
             return res
-        
-        url_oa = search_openalex_by_title(search_query)
-        if url_oa and isinstance(url_oa, str) and url_oa.startswith("http"):
-            res.update({"sources": {"OpenAlex": url_oa}, "found_at_step": "4. OpenAlex"})
-            return res
     except: pass
 
-    # 5. Google Scholar 強化版搜尋 (修復 Ko, K. 等 ResearchGate 文獻)
+    # 4. Google Scholar (針對 Ko, K. 且防止錯判)
     if serpapi_key:
         try:
-            url, found_title = search_scholar_by_title(search_query, serpapi_key, author=first_author, raw_text=text)
-            # 針對標題太短或搜尋失敗，發起第二次組合搜尋
-            if not url or (found_title and "error" in str(found_title).lower()):
-                fallback_query = f"{first_author} {year} {title[:35]}"
-                url, _ = search_scholar_by_title(fallback_query, serpapi_key)
+            # A. 精確標題搜尋
+            url_gs, found_title = search_scholar_by_title(title, serpapi_key, author=first_author)
+            
+            # 相似度檢查：避免將錯誤文獻判定為正確 (閾值設為 0.7)
+            if url_gs and found_title:
+                sim = difflib.SequenceMatcher(None, title.lower(), str(found_title).lower()).ratio()
+                if sim > 0.7:
+                    res.update({"sources": {"Google Scholar": url_gs}, "found_at_step": "5. Google Scholar"})
+                    return res
 
-            if url and isinstance(url, str) and url.startswith("http"):
-                res.update({"sources": {"Google Scholar": url}, "found_at_step": "5. Google Scholar"})
-                return res
+            # B. 針對 ResearchGate 邊緣案例 (Ko, K.) 的最後嘗試
+            # 組合搜尋：作者 + 標題前 5 個字 + 年份
+            keywords = " ".join(title.split()[:5])
+            fallback_q = f"{first_author} \"{keywords}\" {year}"
+            url_fb, title_fb = search_scholar_by_title(fallback_q, serpapi_key)
+            if url_fb and title_fb:
+                sim_fb = difflib.SequenceMatcher(None, title.lower(), str(title_fb).lower()).ratio()
+                if sim_fb > 0.6: # 針對邊緣文獻稍微放寬
+                    res.update({"sources": {"Google Scholar": url_fb}, "found_at_step": "5. Google Scholar (ResearchGate)"})
+                    return res
         except: pass
 
-    # 6. Suggestion & Direct Link
-    if serpapi_key:
-        url_r, _ = search_scholar_by_ref_text(text, serpapi_key, target_title=title)
-        if url_r and isinstance(url_r, str) and url_r.startswith("http"):
-            res["suggestion"] = url_r
-
+    # 5. 直連檢查
     if parsed_url and str(parsed_url).startswith('http'):
         if check_url_availability(parsed_url):
-            res.update({"sources": {"Direct Link": parsed_url}, "found_at_step": "6. Website / Direct URL"})
-        else:
-            res.update({"sources": {"Direct Link (Dead)": parsed_url}, "found_at_step": "6. Website (Link Failed)"})
+            res.update({"sources": {"Direct Link": parsed_url}, "found_at_step": "6. Website Check"})
     
     return res
 
